@@ -70,3 +70,7 @@ data/
 *.pth
 *.pt
 *events.out*
+*.safetensors
+*.txt
+*.mv
+*.msc
