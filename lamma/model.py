@@ -23,6 +23,31 @@ class ModelArgs:
     device: str = None # Device to run the model on, e.g., 'cuda' or 'cpu'
     
 
+def precompute_theta_pos_frenquencies(
+    head_dim: int,
+    seq_len: int,
+    device: str,
+    theta: float = 10000.0
+) -> torch.Tensor:
+    # As write in the paper, the dimension of the embedding must be even
+    assert head_dim %2 == 0, 'Dimensions must be divisible by 2'
+    # build the theta parameters
+    # according to the formula theta_i = 10000 ^ (-2(i-1)/dim) for i = [1,2,3...,dim/2]
+    # Shape (head_dim/2)
+    theta_numerator = torch.arange(0, head_dim, 2).float()
+    # SHape (head_dim/2)
+    theta = 1.0 / (theta ** (theta_numerator / head_dim)).to(device)
+    # Construct the positions (the m parameter in the paper)
+    # Shape (seq_len)
+    m = torch.arange(seq_len).float().to(device)
+    # Multiply each theta by each position using the outer product
+    # Shape (Seq_len) outer_product* (Head_dim/2) -> (seq_len, head_dim/2)
+    freqs = torch.outer(m, theta).float()
+    # we can compute complex numbers in the polar form c = R * exp(i * m * theta) where R = 1 as follows:
+    # (seq_len, head_dim/2) -> (seq_len, head_dim/2)
+    freqs_complex = torch.polar(torch.ones_like(freqs), freqs)
+    return freqs_complex
+
 class Transformer(nn.Module):
     
     def __init__(self, model_args: ModelArgs):
