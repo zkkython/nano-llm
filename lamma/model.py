@@ -66,6 +66,28 @@ def apply_rotaty_embedding(
     # (bs, seq_len, H, head_dim/2, 2) -> (bs, seq_len, H, head_dim)
     x_out = x_out.reshape(*x.shape)
     return x_out.type_as(x).device(device)
+
+
+class RMSNorm(nn.Module):
+    
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        # (dim), the gamma parameter for scaling
+        self.weight = nn.Parameter(torch.ones(dim))
+    def _norm(self, x: torch.Tensor):
+        # x.pow(2).mean(-1, keepdim=True): (bs, seq_len, dim) -> (bs, seq_len, 1)
+        # x: (bs, seq_len, dim) * (bs, seq_len, 1) -> (bs, seq_len, dim)
+        # rsqrt: 1/sqrt(x)
+        # pow: x^y
+        # mean: mean of x along the last dimension
+        # keepdim: keep the last dimension
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        
+        return self.weight * self._norm(x.float()).type_as(x)
     
 class Transformer(nn.Module):
     
