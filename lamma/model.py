@@ -88,7 +88,26 @@ class RMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         
         return self.weight * self._norm(x.float()).type_as(x)
+
+
+class EncoderBlock(nn.Module):
     
+    def __init__(self, 
+                 args: ModelArgs):
+        super().__init__()
+        self.args = args
+        self.n_heads = args.n_heads
+        self.dim = args.dim
+        self.head_dim = self.dim // self.n_heads
+        
+        self.attention = SelfAttention(args)
+        self.feed_forward = FeedForward(args)
+        # norm before the self attention
+        self.attention_norm = RMSNorm(self.dim, eps=args.norm_eps)
+        # norm after self attention, before the feed forward
+        self.ffn_norm = RMSNorm(self.dim, eps=args.norm_eps)
+        
+
 class Transformer(nn.Module):
     
     def __init__(self, model_args: ModelArgs):
