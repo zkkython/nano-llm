@@ -97,7 +97,8 @@ def repeat_kv(x: torch.Tensor, n_sep: int) -> torch.Tensor:
     else:
         return (
             x.unsqueeze(3)
-            .reshape(bs, seq_len, n_kv_heads, n_sep, dim)
+            .expand(bs, seq_len, n_kv_heads, n_sep, dim)
+            .reshape(bs, seq_len, n_kv_heads*n_sep, dim)
         )
 
 
@@ -153,16 +154,26 @@ class SelfAttention(nn.Module):
         keys = self.cache_k[:, 0:start_pos+seq_len]
         # (bs, history_total_seq_len, n_heads_kv, head_dim)
         values= self.cache_v[:, 0:start_pos+seq_len]
+        
+        # (bs, history_total_seq_len, n_heads_kv, head_dim) -> (bs, history_total_seq_len, n_heads_q, head_dim)
+        keys = repeat_kv(keys, self.n_rep)
+        # (bs, history_total_seq_len, n_heads_kv, head_dim) -> (bs, history_total_seq_len, n_heads_q, head_dim)
+        values = repeat_kv(values, self.n_rep)
+        
         # (bs, 1, n_heads_q, head_dim)  -> (bs, n_heads_q, 1, head_dim) 
         xq = xq.transpose(1, 2)
-        # (bs, history_total_seq_len, n_heads_kv, head_dim) -> (bs, n_heads_kv, history_total_seq_len, head_dim)
+        # (bs, history_total_seq_len, n_heads_q, head_dim) -> (bs, n_heads_q, history_total_seq_len, head_dim)
         keys = keys.transpose(1, 2)
-        # (bs, history_total_seq_len, n_heads_kv, head_dim) -> (bs, n_heads_kv, history_total_seq_len, head_dim)
+        # (bs, history_total_seq_len, n_heads_q, head_dim) -> (bs, n_heads_q, history_total_seq_len, head_dim)
         values = values.transpose(1, 2)
-        # (bs, n_heads_q, 1, head_dim)  * (bs, n_heads_kv, head_dim, history_total_seq_len) = (bs, n_heads_q, 1, history_total_seq_len)
+        # (bs, n_heads_q, 1, head_dim)  * (bs, n_heads_q, head_dim, history_total_seq_len) = (bs, n_heads_q, 1, history_total_seq_len)
         softmax = xq.matmul(keys.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        # (bs, n_heads_q, 1, history_total_seq_len) * (bs, history_total_seq_len, n_heads_kv, head_dim)
+        # (bs, n_heads_q, 1, history_total_seq_len) * (bs, n_heads_q, history_total_seq_len, head_dim) = (bs, n_heads_q, 1, head_dim)
         output = softmax.matmul(values)
+        # (bs, n_heads_q, 1, head_dim) -> (bs, 1, n_heads_q*head_dim)
+        output = output.transpose(1, 2).contiguous().view(bs, seq_len, -1)
+        #(bs, 1, n_heads_q*head_dim) * (bs, seq_len, n_heads_q*head_dim, dim)   = (bs, seq_len, dim)
+        return self.wo(output)
         
         
         
