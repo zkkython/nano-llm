@@ -147,13 +147,13 @@ class SelfAttention(nn.Module):
         xv = apply_rotaty_embedding(xv, freqs_complex, x.device)
         
         # 将增量的kv 加入到kv缓存中
-        self.cache_k[:, start_pos:start_pos+seq_len] = xk
-        self.cache_v[:, start_pos:start_pos+seq_len] = xv
+        self.cache_k[:bs, start_pos:start_pos+seq_len] = xk
+        self.cache_v[:bs, start_pos:start_pos+seq_len] = xv
         # 针对一个query，把历史全量的k取出来
         # (bs, history_total_seq_len, n_heads_kv, head_dim)
-        keys = self.cache_k[:, 0:start_pos+seq_len]
+        keys = self.cache_k[:bs, 0:start_pos+seq_len]
         # (bs, history_total_seq_len, n_heads_kv, head_dim)
-        values= self.cache_v[:, 0:start_pos+seq_len]
+        values= self.cache_v[:bs, 0:start_pos+seq_len]
         
         # (bs, history_total_seq_len, n_heads_kv, head_dim) -> (bs, history_total_seq_len, n_heads_q, head_dim)
         keys = repeat_kv(keys, self.n_rep)
@@ -168,6 +168,7 @@ class SelfAttention(nn.Module):
         values = values.transpose(1, 2)
         # (bs, n_heads_q, 1, head_dim)  * (bs, n_heads_q, head_dim, history_total_seq_len) = (bs, n_heads_q, 1, history_total_seq_len)
         softmax = xq.matmul(keys.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        softmax = F.softmax(softmax.float(), dim=-1).type_as(xq)
         # (bs, n_heads_q, 1, history_total_seq_len) * (bs, n_heads_q, history_total_seq_len, head_dim) = (bs, n_heads_q, 1, head_dim)
         output = softmax.matmul(values)
         # (bs, n_heads_q, 1, head_dim) -> (bs, 1, n_heads_q*head_dim)
