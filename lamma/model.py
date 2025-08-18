@@ -90,6 +90,84 @@ class RMSNorm(nn.Module):
         return self.weight * self._norm(x.float()).type_as(x)
 
 
+def repeat_kv(x: torch.Tensor, n_sep: int) -> torch.Tensor:
+    bs, seq_len, n_kv_heads, dim =x.shape
+    if n_sep == 1:
+        return x
+    else:
+        return (
+            x.unsqueeze(3)
+            .reshape(bs, seq_len, n_kv_heads, n_sep, dim)
+        )
+
+
+class SelfAttention(nn.Module):
+    
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+        self.args = args
+        self.n_heads_q = args.n_heads
+        self.dim = args.dim
+        self.head_dim = self.dim // self.n_heads_q
+        self.n_heads_kv = args.n_kv_heads or args.n_heads
+        self.n_rep = self.n_heads_kv // self.n_heads_q
+        self.wq = nn.Linear(self.dim, self.n_heads_q * self.head_dim, bias=False)
+        self.wk = nn.Linear(self.dim, self.n_heads_kv * self.head_dim, bias=False)
+        self.wv = nn.Linear(self.dim, self.n_heads_kv * self.head_dim, bias=False)
+        self.wo = nn.Linear(self.n_heads_q * self.head_dim, self.dim, bias=False)
+        
+        self.cache_k = torch.zeros((args.max_batch_size,
+                                    args.max_seq_len, 
+                                    self.n_heads_kv, self.head_dim))
+        self.cache_v = torch.zeros((args.max_batch_size, args.max_seq_len, 
+                                    self.n_heads_kv, self.head_dim)
+                                   ).to(args.device)
+        
+    # 单个token单个token的处理，所以此时的start_pos代表的是token位置索引，比如start_pos=0，则表示的是第一个token
+    def forward(self, x: torch.Tensor, start_pos: int, freqs_complex: torch.Tensor) -> torch.Tensor:
+        # x: (bs, seq_len, dim)
+        # start_pos: int, the position of the start token
+        # freqs_complex: (seq_len, head_dim/2)
+        bs, seq_len, _ = x.shape # (bs, 1, dim)
+        # (bs, seq_len, dim) -> (bs, seq_len, n_heads_q * head_dim)
+        xq = self.wq(x)
+        # (bs, seq_len, n_heads_q * head_dim) -> (bs, seq_len, n_heads_q, head_dim) 
+        xq = xq.view(bs, seq_len, self.n_heads_q, self.head_dim) 
+        # (bs, seq_len, dim) -> (bs, seq_len, n_heads_kv, head_dim)
+        xk = self.wk(x)
+        # (bs, seq_len, n_heads_kv * head_dim) -> (bs, seq_len, n_heads_kv, head_dim)
+        xk = xk.view(bs, seq_len, self.n_heads_kv, self.head_dim)
+        # (bs, seq_len, dim) -> (bs, seq_len, n_heads_kv * head_dim)
+        xv = self.wv(x)
+        # (bs, seq_len, n_heads_kv * head_dim) -> (bs, seq_len, n_heads_kv, head_dim)
+        xv = xv.view(bs, seq_len, self.n_heads_kv, self.head_dim)
+        
+        xk = apply_rotaty_embedding(xk, freqs_complex, x.device)
+        xv = apply_rotaty_embedding(xv, freqs_complex, x.device)
+        
+        # 将增量的kv 加入到kv缓存中
+        self.cache_k[:, start_pos:start_pos+seq_len] = xk
+        self.cache_v[:, start_pos:start_pos+seq_len] = xv
+        # 针对一个query，把历史全量的k取出来
+        # (bs, history_total_seq_len, n_heads_kv, head_dim)
+        keys = self.cache_k[:, 0:start_pos+seq_len]
+        # (bs, history_total_seq_len, n_heads_kv, head_dim)
+        values= self.cache_v[:, 0:start_pos+seq_len]
+        # (bs, 1, n_heads_q, head_dim)  -> (bs, n_heads_q, 1, head_dim) 
+        xq = xq.transpose(1, 2)
+        # (bs, history_total_seq_len, n_heads_kv, head_dim) -> (bs, n_heads_kv, history_total_seq_len, head_dim)
+        keys = keys.transpose(1, 2)
+        # (bs, history_total_seq_len, n_heads_kv, head_dim) -> (bs, n_heads_kv, history_total_seq_len, head_dim)
+        values = values.transpose(1, 2)
+        # (bs, n_heads_q, 1, head_dim)  * (bs, n_heads_kv, head_dim, history_total_seq_len) = (bs, n_heads_q, 1, history_total_seq_len)
+        softmax = xq.matmul(keys.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        # (bs, n_heads_q, 1, history_total_seq_len) * (bs, history_total_seq_len, n_heads_kv, head_dim)
+        output = softmax.matmul(values)
+        
+        
+        
+        
+        
 class EncoderBlock(nn.Module):
     
     def __init__(self, 
@@ -107,7 +185,19 @@ class EncoderBlock(nn.Module):
         # norm after self attention, before the feed forward
         self.ffn_norm = RMSNorm(self.dim, eps=args.norm_eps)
         
-
+    def forward(self, x: torch.Tensor, start_pos: int, freqs_complex: torch.Tensor) -> torch.Tensor:
+        # x: (bs, seq_len, dim)
+        # apply the norm before the self attention
+        norm = self.attention_norm(x)
+        # apply the self attention
+        
+        # (bs, seq_len, dim) + (bs, seq_len, dim)  -> (bs, seq_len, dim)
+        h = x + self.attention(norm, start_pos, freqs_complex)
+        # apply the norm after the self attention
+        ffn_norm = self.ffn_norm(x)
+        # apply the feed forward
+        out = h + self.feed_forward(ffn_norm)
+        return out
 class Transformer(nn.Module):
     
     def __init__(self, model_args: ModelArgs):
