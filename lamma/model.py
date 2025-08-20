@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from dataclasses import dataclass
-from typing import Optional, List, Tuple, Union, Dict
+from typing import Optional
 
 
 @dataclass
